@@ -1,0 +1,23 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Pico Debug",
+            "type":"cortex-debug",
+            "cwd": "${workspaceRoot}",
+            "executable": "${workspaceFolder}/build/sample.elf",
+            "request": "launch",
+            "servertype": "external",
+            "gdbPath" : "gdb-multiarch",
+            "gdbTarget": "localhost:3333",
+            "svdFile": "${env:PICO_SDK_PATH}/src/rp2040/hardware_regs/rp2040.svd",
+            "runToEntryPoint": "main",
+            "postRestartCommands": [
+                "break main",
+                "continue"
+            ]
+            // "preLaunchTask": "Start remote openocd with port forwarding",
+            // "postDebugTask": "Stop remote openocd"
+        }
+    ]
+}

@@ -1,0 +1,24 @@
+# python3 /home/pi/dev/pico/pico-sdk/lib/btstack/tool/compile_gatt.py temp_sensor.gatt temp_sensor
+
+PRIMARY_SERVICE, GAP_SERVICE
+CHARACTERISTIC, GAP_DEVICE_NAME, READ, "picow_temp"
+
+PRIMARY_SERVICE, GATT_SERVICE
+CHARACTERISTIC, GATT_DATABASE_HASH, READ,
+
+PRIMARY_SERVICE, ORG_BLUETOOTH_SERVICE_ENVIRONMENTAL_SENSING
+CHARACTERISTIC, ORG_BLUETOOTH_CHARACTERISTIC_TEMPERATURE, READ | NOTIFY | INDICATE | DYNAMIC,
+
+# --- Custom CSV Service for sending strings ---
+# For custom services or characteristics, you can use any valid 128-bit UUID
+#               custom id  Bluetooth Base UUID
+#               00010000 - 0000-1000-8000-00805f9b34fb
+#                  |
+#               Custom 16-bit ID 0x0001 for a service
+# 0001xxxx-0000-1000-8000-00805F9B34FB is a common convention
+# when you don’t have a Bluetooth SIG-assigned UUID.
+
+PRIMARY_SERVICE, 00010000-0000-1000-8000-00805f9b34fb
+CHARACTERISTIC, 00010001-0000-1000-8000-00805f9b34fb, NOTIFY, "CSV Data"
+  VALUE_HANDLE, csv_value_handle
+  CLIENT_CHARACTERISTIC_CONFIGURATION, csv_ccc
