@@ -401,9 +401,9 @@ void windDirectionTask(__unused void* pvParameters) {
     
     // weatherStationData = fmt::format("{},{},{},{}",
     //   buttonPresses, windSpeed, windDirectionName, gpsData);
-    weatherStationData = fmt::format("{},{},{},{},{},{},{},{},{},{}",
+    weatherStationData = fmt::format("{},{},{},{},{},{},{},{},{}!",
       dateTime.c_str(), luxValue, buttonPresses, windSpeed, windDirectionName,
-      temperature, pressure, humidity, windDirectionADCValue, gpsData);
+      temperature, pressure, humidity, windDirectionADCValue);
 
     //pCBSD->writeAfterInit();
     pCBSD->writeAfterInit(weatherStationData);
@@ -431,10 +431,10 @@ void windDirectionTask(__unused void* pvParameters) {
     const char *msg = "testing from the weather station pico\n";
     if (xSemaphoreTake(uart_mutex, pdMS_TO_TICKS(100))) {
       // uart_write_blocking(uart0, (const uint8_t *)msg, strlen(msg));
-      #ifndef DEBUG
-      uart_write_blocking(uart0, (const uint8_t *)weatherStationData.c_str(),
+      // #ifndef DEBUG
+      uart_write_blocking(uart1, (const uint8_t *)weatherStationData.c_str(),
         strlen(weatherStationData.c_str()));
-      #endif
+      // #endif
       xSemaphoreGive(uart_mutex);
     }
     printf("sent to lora...\n");
@@ -797,10 +797,15 @@ void veml7700Task(void *params) {
 
 
 
+// void initLoraUart() {
+//   uart_init(uart0, 115200);
+//   gpio_set_function(0, GPIO_FUNC_UART);
+//   gpio_set_function(1, GPIO_FUNC_UART);
+// }
 void initLoraUart() {
-  uart_init(uart0, 115200);
-  gpio_set_function(0, GPIO_FUNC_UART);
-  gpio_set_function(1, GPIO_FUNC_UART);
+  uart_init(uart1, 115200);
+  gpio_set_function(4, GPIO_FUNC_UART);
+  gpio_set_function(5, GPIO_FUNC_UART);
 }
 
 
@@ -810,15 +815,15 @@ void initLoraUart() {
 
 
 int main(void) {
-  #ifdef DEBUG
+  // #ifdef DEBUG
   stdio_init_all();
-  #endif
+  // #endif
 
-  init_uart();
+  // init_uart();
 
-  #ifndef DEBUG
+  //#ifndef DEBUG
   initLoraUart();
-  #endif
+  //#endif
 
   // uart_init(uart1, 9600);
   // gpio_set_function(4, GPIO_FUNC_UART);
@@ -892,7 +897,7 @@ int main(void) {
 
   xTaskCreate(printTask, "PrintTask", 256, NULL, 2, &printTaskHandle);
 
-  xTaskCreate(gpsTask, "GPSTask", 1024, NULL, 1, &gpsTaskHandle);
+  // xTaskCreate(gpsTask, "GPSTask", 1024, NULL, 1, &gpsTaskHandle);
 
   xTaskCreate(bme280Task, "BME280Task", 1024, NULL, 1, &bme280TaskHandle);
 
