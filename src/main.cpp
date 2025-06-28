@@ -48,11 +48,17 @@ TaskHandle_t windDirectionTaskHandle;
 TaskHandle_t windSpeedTaskHandle;
 TaskHandle_t gpsTaskHandle;
 TaskHandle_t bme280TaskHandle;
+TaskHandle_t ds3231TaskHandle;
+TaskHandle_t veml7700TaskHandle;
 
 QueueHandle_t btstack_event_queue;
 
 std::string weatherStationData;
+std::string dateTime;
 std::string gpsData;
+float luxValue;
+
+SemaphoreHandle_t i2c_mutex;
 
 void main_task(__unused void *params);
 int picow_bt_example_init(void);
@@ -388,17 +394,17 @@ void windDirectionTask(__unused void* pvParameters) {
 
     getDirectionFromADCValue(data, windDirectionName);
 
-    printf("%d **************** Rain: %d, Wind Speed: %d, Wind Direction: %s, Temp: %.2f, Press: %.2f, Humidity: %.2f\n",
-      windDirectionADCValue, buttonPresses, windSpeed, windDirectionName, temperature, pressure, humidity);
+    printf("%s %d **************** Rain: %d, Wind Speed: %d, Wind Direction: %s, Temp: %.2f, Press: %.2f, Humidity: %.2f, Lux: %.2f\n",
+      dateTime.c_str(), windDirectionADCValue, buttonPresses, windSpeed, windDirectionName, temperature, pressure, humidity, luxValue);
 
     sleep_ms(100);
     
     // weatherStationData = fmt::format("{},{},{},{}",
     //   buttonPresses, windSpeed, windDirectionName, gpsData);
-    weatherStationData = fmt::format("{},{},{},{},{},{},{},{}",
-      buttonPresses, windSpeed, windDirectionName,
+    weatherStationData = fmt::format("{},{},{},{},{},{},{},{},{},{}",
+      dateTime.c_str(), luxValue, buttonPresses, windSpeed, windDirectionName,
       temperature, pressure, humidity, windDirectionADCValue, gpsData);
-    
+
     //pCBSD->writeAfterInit();
     pCBSD->writeAfterInit(weatherStationData);
     
@@ -600,6 +606,60 @@ void update_time_from_gps(int year, int month, int day, int hour, int minute, in
 
 
 
+DS3231 rtc(i2c0);
+void rtc_task(void* pvParameters) {
+    rtc.init();
+
+    while (true) {
+        struct tm time;
+        if (xSemaphoreTake(i2c_mutex, portMAX_DELAY)) {
+          if (rtc.readTime(time)) {
+              // printf("Time: %02d:%02d:%02d Date: %04d/%02d/%02d\n",
+              //       time.tm_hour, time.tm_min, time.tm_sec,
+              //       time.tm_year + 1900, time.tm_mon + 1, time.tm_mday);
+              printf("Date: %02d/%02d/%04d Time: %02d:%02d:%02d\n",
+                time.tm_mday, time.tm_mon + 1, time.tm_year + 1900,
+                time.tm_hour, time.tm_min, time.tm_sec);
+
+              dateTime = fmt::format("{:02d}/{:02d}/{:4d} {:02d}:{:02d}:{:02d}",
+                time.tm_mday, time.tm_mon + 1, time.tm_year + 1900,
+                time.tm_hour, time.tm_min, time.tm_sec);      
+          }
+          else {
+              printf("Failed to read time\n");
+          }
+          xSemaphoreGive(i2c_mutex);
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+void rtc_setup_task(void* pvParameters) {
+    struct tm buildTime = {
+        .tm_sec = 0,
+        .tm_min = 45,
+        .tm_hour = 12,
+        .tm_mday = 28,
+        .tm_mon = 6 - 1,     // June (0-based)
+        .tm_year = 2025 - 1900,
+        .tm_wday = 6,        // Optional: Saturday
+    };
+
+    if (rtc.setTime(buildTime)) {
+        printf("RTC time set to %04d-%02d-%02d %02d:%02d:%02d\n",
+               buildTime.tm_year + 1900, buildTime.tm_mon + 1, buildTime.tm_mday,
+               buildTime.tm_hour, buildTime.tm_min, buildTime.tm_sec);
+    }
+    else {
+        printf("Failed to set RTC time\n");
+    }
+
+    vTaskDelete(NULL); // Self-terminate
+}
+
+
+
+
+
 
 
 
@@ -683,19 +743,55 @@ void gpsTask2(__unused void* pvParameters) {
 
 void bme280Task(void* pvParameters) {
   BME280Sensor sensor(i2c0, 0x76, 8, 9);
-  if (!sensor.init()) {
-    printf("Failed to init BME280\n");
-    vTaskDelete(NULL);
+  if (xSemaphoreTake(i2c_mutex, portMAX_DELAY)) {
+    if (!sensor.init()) {
+      printf("Failed to init BME280\n");
+      xSemaphoreGive(i2c_mutex);
+      vTaskDelete(NULL);
+    }
+    xSemaphoreGive(i2c_mutex);
   }
 
   while (true) {
     // pass variables by reference
     printf("<<<<<<<<<<<<<<<<<<<<<< READING BME280\n");
-    if (sensor.readSensor(temperature, pressure, humidity)) {
-        printf("T: %.2f°C, P: %.2f hPa, H: %.2f%%\n", temperature, pressure, humidity);
+    if (xSemaphoreTake(i2c_mutex, portMAX_DELAY)) {
+      if (sensor.readSensor(temperature, pressure, humidity)) {
+          printf("T: %.2f°C, P: %.2f hPa, H: %.2f%%\n", temperature, pressure, humidity);
+      }
+      xSemaphoreGive(i2c_mutex);
     }
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
+}
+
+
+
+
+void veml7700Task(void *params) {
+    VEML7700 sensor(i2c0, 0x10, 8, 9);
+
+    if (xSemaphoreTake(i2c_mutex, portMAX_DELAY)) {
+      if (!sensor.begin()) {
+          xSemaphoreGive(i2c_mutex);
+          printf("VEML7700 init failed\n");
+          vTaskDelete(NULL);
+      }
+      xSemaphoreGive(i2c_mutex);
+    }
+
+    while (true) {
+        if (xSemaphoreTake(i2c_mutex, portMAX_DELAY)) {
+          if (sensor.readLux(luxValue)) {
+              printf("Lux: %.2f\n", luxValue);
+          }
+          else {
+              printf("Failed to read lux\n");
+          }
+          xSemaphoreGive(i2c_mutex);
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000)); // 1s delay
+    }
 }
 
 
@@ -737,6 +833,14 @@ int main(void) {
   gpio_init(ANEMOMETER_INTERRUPT_PIN);
   gpio_set_dir(ANEMOMETER_INTERRUPT_PIN, GPIO_IN);
   gpio_pull_down(ANEMOMETER_INTERRUPT_PIN);
+
+  int _sda_pin = 8;
+  int _scl_pin = 9;
+  i2c_init(i2c0, 100 * 1000);
+  gpio_set_function(_sda_pin, GPIO_FUNC_I2C);
+  gpio_set_function(_scl_pin, GPIO_FUNC_I2C);
+  gpio_pull_up(_sda_pin);
+  gpio_pull_up(_scl_pin);
 
   // RAIN
   gpio_set_irq_enabled_with_callback(RAIN_INTERRUPT_PIN, GPIO_IRQ_EDGE_RISE,
@@ -792,7 +896,41 @@ int main(void) {
 
   xTaskCreate(bme280Task, "BME280Task", 1024, NULL, 1, &bme280TaskHandle);
 
+  xTaskCreate(veml7700Task, "VEML7700Task", 1024, NULL, 1, &veml7700TaskHandle);
+
+  /*
+   set the rtc date/time
+   ---------------------
+   https://forum.arduino.cc/t/setting-accurate-time-with-ds3231-h-library/627993/7
+   uncomment xTaskCreate/rtc_setup_task below.
+   set the date/time in rtc_setup_task, e.g. 12:40:00.
+   make and upload to the pico several minutes before 12:40:00.
+   unplug the pico.
+   at 12:40:00, plug in the pico.
+   unplug the pico and plug in with bootsel held down for programming.
+   comment out xTaskCreate/rtc_setup_task below.
+   make and upload to the pico.
+   the rtc will stay on the correct time if the battery is in place.
+  */
+  // xTaskCreate(
+  //   rtc_setup_task,
+  //   "RTC Setup",
+  //   1024,
+  //   nullptr,
+  //   tskIDLE_PRIORITY + 2, // higher priority to run before other tasks
+  //   nullptr
+  // ); 
+  xTaskCreate(
+    rtc_task,
+    "RTC Task",
+    1024,
+    nullptr,
+    tskIDLE_PRIORITY + 1,
+    nullptr
+  );
+
   uart_mutex = xSemaphoreCreateMutex();
+  i2c_mutex = xSemaphoreCreateMutex();
 
   vLaunch();
   
