@@ -7,11 +7,11 @@ BME280Sensor::BME280Sensor(i2c_inst_t* i2c, uint8_t address, uint sda_pin, uint 
     : _i2c(i2c), _address(address), _sda_pin(sda_pin), _scl_pin(scl_pin) {}
 
 bool BME280Sensor::init() {
-    i2c_init(_i2c, 100 * 1000);
-    gpio_set_function(_sda_pin, GPIO_FUNC_I2C);
-    gpio_set_function(_scl_pin, GPIO_FUNC_I2C);
-    gpio_pull_up(_sda_pin);
-    gpio_pull_up(_scl_pin);
+    // i2c_init(_i2c, 100 * 1000);
+    // gpio_set_function(_sda_pin, GPIO_FUNC_I2C);
+    // gpio_set_function(_scl_pin, GPIO_FUNC_I2C);
+    // gpio_pull_up(_sda_pin);
+    // gpio_pull_up(_scl_pin);
 
     if (readRegister(0xD0) != 0x60) return false;  // Check chip ID
 
