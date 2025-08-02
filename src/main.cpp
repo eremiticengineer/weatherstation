@@ -72,6 +72,11 @@ void heartbeatHandler(btstack_timer_source_t *ts);
 
 void ledTask(void *params);
 
+void updateMaxWindGust(long speed);
+void updateWindSpeedRunningAverage(long new_speed);
+float getMaxWindGust();
+long getWindSpeedRunningAverage();
+
 
 
 
@@ -135,8 +140,60 @@ int calculateWindSpeed() {
     // One anemometer turn in one second is 1.492 miles per hour
     long speed = (14920 * anemometerClicks) / 10000;
     anemometerClicks = 0;
+
+    updateMaxWindGust(speed);
+
+    updateWindSpeedRunningAverage(speed);
+
     return (int)speed;
 }
+
+// Circular buffer
+#define MAX_SAMPLES 360 // 360 × 10s = 1 hour
+float gust_buffer[MAX_SAMPLES];
+int gust_index = 0;
+float max_gust = 0;
+
+void updateMaxWindGust(long speed) {
+  float old = gust_buffer[gust_index];
+  gust_buffer[gust_index] = speed;
+  gust_index = (gust_index + 1) % MAX_SAMPLES;
+
+  // Recalculate max if needed
+  if (speed >= max_gust) {
+      max_gust = speed;
+  }
+  else if (old == max_gust) {
+    // Recalculate full max
+    max_gust = gust_buffer[0];
+    for (int i = 1; i < MAX_SAMPLES; ++i) {
+      if (gust_buffer[i] > max_gust) {
+          max_gust = gust_buffer[i];
+      }
+    }
+  }
+}
+
+float getMaxWindGust() {
+  return max_gust;
+}
+
+constexpr int SAMPLE_INTERVAL_MS = 500;
+constexpr int AVG_WINDOW_SIZE = 12; // 12 × 0.5s = 6 seconds
+long speed_buffer[AVG_WINDOW_SIZE];
+int buffer_index = 0;
+long speed_sum = 0;
+
+void updateWindSpeedRunningAverage(long new_speed) {
+    speed_sum -= speed_buffer[buffer_index];       // Subtract old value
+    speed_buffer[buffer_index] = new_speed;        // Store new
+    speed_sum += new_speed;                        // Add new
+    buffer_index = (buffer_index + 1) % AVG_WINDOW_SIZE;
+}
+long getWindSpeedRunningAverage() {
+    return speed_sum / AVG_WINDOW_SIZE;
+}
+
 
 
 void getDirectionFromADCValue(int adcValue, char* buffer) {
@@ -348,7 +405,8 @@ void printTask(__unused void* pvParameters) {
 void windSpeedTask(__unused void* pvParameters) {
   while(true) {
     windSpeed = calculateWindSpeed();
-    vTaskDelay(500);
+    //vTaskDelay(500);
+    vTaskDelay(pdMS_TO_TICKS(1000));
   }
 }
 
@@ -402,8 +460,13 @@ void windDirectionTask(__unused void* pvParameters) {
     // weatherStationData = fmt::format("{},{},{},{}",
     //   buttonPresses, windSpeed, windDirectionName, gpsData);
     weatherStationData = fmt::format("{},{},{},{},{},{},{},{},{}!",
-      dateTime.c_str(), luxValue, buttonPresses, windSpeed, windDirectionName,
-      temperature, pressure, humidity, windDirectionADCValue);
+      dateTime.c_str(),
+      buttonPresses,
+      getWindSpeedRunningAverage(),
+      getMaxWindGust(),
+      windDirectionName,
+      temperature, pressure, humidity,
+      luxValue);
 
     //pCBSD->writeAfterInit();
     pCBSD->writeAfterInit(weatherStationData);
