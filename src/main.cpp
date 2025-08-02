@@ -76,6 +76,7 @@ void updateMaxWindGust(long speed);
 void updateWindSpeedRunningAverage(long new_speed);
 float getMaxWindGust();
 long getWindSpeedRunningAverage();
+float calculateHourlyRainfall();
 
 
 
@@ -115,16 +116,50 @@ static inline void cs_deselect() {
     asm volatile("nop \n nop \n nop");
 }
 
+volatile uint32_t rainBucketTips = 0;
 void weatherSensorsCallback(uint gpio, __unused uint32_t events) {
   if (gpio == RAIN_INTERRUPT_PIN) {
+    // Each 0.2794mm of rain cause one momentary contact closure
     ledShouldBeOn = !ledShouldBeOn;
     buttonPresses++;
+    rainBucketTips++;
   }
   else if (gpio == ANEMOMETER_INTERRUPT_PIN) {
     // printf("---------------------------------- ANEMOMETER_INTERRUPT_PIN\n");
     anemometerClicks++;
   }
 }
+
+constexpr int RAIN_BUFFER_SIZE = 360; // 360 × 10s = 1 hour
+constexpr float RAIN_PER_TIP_MM = 0.2794f;
+uint16_t rain_buffer[RAIN_BUFFER_SIZE] = {0};
+int rain_index = 0;
+// int rain_minute_index = 0;
+// void rotateRainBuffer() {
+//   rain_minute_index = (rain_minute_index + 1) % RAIN_BUFFER_SIZE;
+//   rain_buffer[rain_minute_index] = 0; // clear old minute’s count
+// }
+// float getHourlyRainfallmm() {
+//   uint32_t tip_sum = 0;
+//   for (int i = 0; i < RAIN_BUFFER_SIZE; ++i) {
+//       tip_sum += rain_buffer[i];
+//   }
+//   return tip_sum * RAIN_PER_TIP_MM;
+// }
+float calculateHourlyRainfall() {
+  uint32_t tips = rainBucketTips;
+  rainBucketTips = 0;
+  // Store tip count in buffer
+  rain_buffer[rain_index] = tips;
+  rain_index = (rain_index + 1) % RAIN_BUFFER_SIZE;
+  // Calculate rainfall over the past hour
+  uint32_t tip_sum = 0;
+  for (int i = 0; i < RAIN_BUFFER_SIZE; ++i) {
+    tip_sum += rain_buffer[i];
+  }  
+  return tip_sum * RAIN_PER_TIP_MM;
+}
+
 
 bool timerCallback(__unused repeating_timer_t* repeatingTimerInfo) {
     //printf("anemometerClicks %d ", anemometerClicks);
@@ -456,12 +491,12 @@ void windDirectionTask(__unused void* pvParameters) {
       dateTime.c_str(), windDirectionADCValue, buttonPresses, windSpeed, windDirectionName, temperature, pressure, humidity, luxValue);
 
     sleep_ms(100);
-    
+
     // weatherStationData = fmt::format("{},{},{},{}",
     //   buttonPresses, windSpeed, windDirectionName, gpsData);
     weatherStationData = fmt::format("{},{},{},{},{},{},{},{},{}!",
       dateTime.c_str(),
-      buttonPresses,
+      calculateHourlyRainfall(),
       getWindSpeedRunningAverage(),
       getMaxWindGust(),
       windDirectionName,
@@ -509,7 +544,8 @@ void windDirectionTask(__unused void* pvParameters) {
       printf("sent\n");
     }
 
-    vTaskDelay(pdMS_TO_TICKS(10000));
+    //vTaskDelay(pdMS_TO_TICKS(10000));
+    vTaskDelay(pdMS_TO_TICKS(300000)); // 5mins
   }
 }
 
