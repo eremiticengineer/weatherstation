@@ -261,11 +261,6 @@ int attWriteCallback(hci_con_handle_t connection_handle, uint16_t att_handle,
 
 
 
-void vLaunch(void) {
-  xTaskCreate(main_task, "TestMainThread", 1024, NULL, TASK_PRIORITY, &btTaskHandle);
-  xTaskCreate(ledTask, "LEDTask", 1024, NULL, tskIDLE_PRIORITY, &ledTaskHandle);
-  vTaskStartScheduler();
-}
 void main_task(__unused void *params) {
   int res = picow_bt_example_init();
   if (res){
@@ -510,6 +505,36 @@ void veml7700Task(void *params) {
 }
 
 
+int32_t averageWindSpeed1s,averageWindSpeed,maximumWindGust,maximumHourlyWindGust;
+void averageWindSpeedTask(void*){
+  const TickType_t period = pdMS_TO_TICKS(1000);
+  while (true) {
+    vTaskDelay(period);
+    averageWindSpeed1s = wind.sampleAverage1s();
+    averageWindSpeed = wind.getRunningAverageMph();
+  }
+}
+
+void windGustTask(void*){
+  const uint32_t GUST_MS = 200;
+  const TickType_t period = pdMS_TO_TICKS(GUST_MS);
+  while (true) {
+    vTaskDelay(period);
+    maximumWindGust = wind.sampleGustInterval(GUST_MS);
+  }
+}
+
+void windSpeedBufferRotateTask(void*){
+  const TickType_t period = pdMS_TO_TICKS(60000);
+  while (true) {
+    vTaskDelay(period);
+    wind.rotateMinute();
+    maximumHourlyWindGust = wind.getHourlyMaxGustMph();
+  }
+}
+
+
+
 void initLoraUart() {
   uart_init(uart1, 115200);
   gpio_set_function(4, GPIO_FUNC_UART);
@@ -576,6 +601,13 @@ int main(void) {
 
   xTaskCreate(veml7700Task, "VEML7700Task", 1024, NULL, 1, &veml7700TaskHandle);
 
+  xTaskCreate(averageWindSpeedTask, "AverageWindSpeedTask", 1024, nullptr, 1, nullptr);
+  xTaskCreate(windGustTask, "WindGustTask", 1024, nullptr, 1, nullptr);
+  xTaskCreate(windSpeedBufferRotateTask, "WindSpeedBufferRotateTask", 1024, nullptr, 1, nullptr);
+
+
+  
+
   /*
    set the rtc date/time
    ---------------------
@@ -610,7 +642,10 @@ int main(void) {
   uart_mutex = xSemaphoreCreateMutex();
   i2c_mutex = xSemaphoreCreateMutex();
 
-  vLaunch();
+  xTaskCreate(main_task, "TestMainThread", 1024, NULL, TASK_PRIORITY, &btTaskHandle);
+  xTaskCreate(ledTask, "LEDTask", 1024, NULL, tskIDLE_PRIORITY, &ledTaskHandle);
+
+  vTaskStartScheduler();
   
   // This only returns if something breaks so can't create any more tasks from the main thread.
   // Need to spawn them from already spawned tasks.
