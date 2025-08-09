@@ -43,6 +43,7 @@ add_executable(${PROJECT}
   src/VEML7700/VEML7700.cpp
   src/DS3231/DS3231.h
   src/DS3231/DS3231.cpp
+  src/WindMonitor/WindMonitor.hpp
 )
 
 pico_enable_stdio_usb(${PROJECT} 1)
@@ -91,6 +92,7 @@ target_include_directories(${PROJECT} PUBLIC
   src/BME280Sensor
   src/VEML7700
   src/DS3231
+  src/WindMonitor
 )
 
 target_compile_options(${PROJECT} PUBLIC
