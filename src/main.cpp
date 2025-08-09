@@ -32,11 +32,13 @@
 #include <semphr.h>
 
 #include "WindMonitor.hpp"
+#include "RainMonitor.hpp"
 
 // Standard Task priority
 #define TASK_PRIORITY (tskIDLE_PRIORITY + 1UL)
 
 static WindMonitor wind;
+static RainMonitor rain;
 
 TaskHandle_t printTaskHandle;
 
@@ -94,34 +96,15 @@ static inline void cs_deselect() {
     asm volatile("nop \n nop \n nop");
 }
 
-volatile uint32_t rainBucketTips = 0;
 void weatherSensorsCallback(uint gpio, __unused uint32_t events) {
   if (gpio == RAIN_INTERRUPT_PIN) {
     // Each 0.2794mm of rain cause one momentary contact closure
     ledShouldBeOn = !ledShouldBeOn;
-    rainBucketTips++;
+    rain.onTip();
   }
   else if (gpio == ANEMOMETER_INTERRUPT_PIN) {
     wind.onPulse();
   }
-}
-
-constexpr int RAIN_BUFFER_SIZE = 360; // 360 × 10s = 1 hour
-constexpr float RAIN_PER_TIP_MM = 0.2794f;
-uint16_t rain_buffer[RAIN_BUFFER_SIZE] = {0};
-int rain_index = 0;
-float calculateHourlyRainfall() {
-  uint32_t tips = rainBucketTips;
-  rainBucketTips = 0;
-  // Store tip count in buffer
-  rain_buffer[rain_index] = tips;
-  rain_index = (rain_index + 1) % RAIN_BUFFER_SIZE;
-  // Calculate rainfall over the past hour
-  uint32_t tip_sum = 0;
-  for (int i = 0; i < RAIN_BUFFER_SIZE; ++i) {
-    tip_sum += rain_buffer[i];
-  }  
-  return tip_sum * RAIN_PER_TIP_MM;
 }
 
 void getDirectionFromADCValue(int adcValue, char* buffer) {
@@ -349,14 +332,14 @@ void windDirectionTask(__unused void* pvParameters) {
 
     getDirectionFromADCValue(data, windDirectionName);
 
-    printf("%s %d **************** Rain: %d, Wind Speed: %d, Wind Direction: %s, Temp: %.2f, Press: %.2f, Humidity: %.2f, Lux: %.2f\n",
-      dateTime.c_str(), windDirectionADCValue, rainBucketTips, wind.getRunningAverageMph(), windDirectionName, temperature, pressure, humidity, luxValue);
+    printf("%s %d **************** Rain: %f, Wind Speed: %ld, Wind Direction: %s, Temp: %.2f, Press: %.2f, Humidity: %.2f, Lux: %.2f\n",
+      dateTime.c_str(), windDirectionADCValue, rain.getHourlyRainMm(), wind.getRunningAverageMph(), windDirectionName, temperature, pressure, humidity, luxValue);
 
     sleep_ms(100);
 
     weatherStationData = fmt::format("{},{},{},{},{},{},{},{},{}!",
       dateTime.c_str(),
-      calculateHourlyRainfall(),
+      rain.getHourlyRainMm(),
       wind.getRunningAverageMph(),
       wind.getHourlyMaxGustMph(),
       windDirectionName,
@@ -519,6 +502,14 @@ void windSpeedBufferRotateTask(void*){
   }
 }
 
+void rainMinuteTask(void*) {
+  const TickType_t period = pdMS_TO_TICKS(60000);
+  while (true) {
+    vTaskDelay(period);
+    rain.rotateMinute();
+  }
+}
+
 
 
 void initLoraUart() {
@@ -590,6 +581,8 @@ int main(void) {
   xTaskCreate(averageWindSpeedTask, "AverageWindSpeedTask", 1024, nullptr, 1, nullptr);
   xTaskCreate(windGustTask, "WindGustTask", 1024, nullptr, 1, nullptr);
   xTaskCreate(windSpeedBufferRotateTask, "WindSpeedBufferRotateTask", 1024, nullptr, 1, nullptr);
+
+  xTaskCreate(rainMinuteTask, "RainMinuteTask", 1024, nullptr, 1, nullptr);
 
 
   
