@@ -2,6 +2,7 @@
 #include <cstdint>
 #include "FreeRTOS.h"
 #include "task.h"
+#include "hardware/sync.h"
 
 // 1 turn/sec = 1.492 mph  → scale factor = 14920 / 10000 (integer math)
 static constexpr int32_t WIND_SCALE_NUM   = 14920;
