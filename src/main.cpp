@@ -33,26 +33,12 @@
 
 #include "WindMonitor.hpp"
 
-// If this is defined, LoRa is disabled to allow printf to use UART0
-//#define DEBUG
-
-#define TEST_TASK_PRIORITY ( tskIDLE_PRIORITY + 2UL )
-#define BLINK_TASK_PRIORITY ( tskIDLE_PRIORITY + 1UL )
-
 // Standard Task priority
 #define TASK_PRIORITY (tskIDLE_PRIORITY + 1UL)
 
 static WindMonitor wind;
 
-TaskHandle_t ledTaskHandle;
-TaskHandle_t sdTaskHandle;
 TaskHandle_t printTaskHandle;
-TaskHandle_t btTaskHandle;
-TaskHandle_t windDirectionTaskHandle;
-TaskHandle_t gpsTaskHandle;
-TaskHandle_t bme280TaskHandle;
-TaskHandle_t ds3231TaskHandle;
-TaskHandle_t veml7700TaskHandle;
 
 QueueHandle_t btstack_event_queue;
 
@@ -575,7 +561,7 @@ int main(void) {
   gpio_set_irq_enabled(ANEMOMETER_INTERRUPT_PIN, GPIO_IRQ_EDGE_RISE, CALLBACK_ENABLED);
 
   Codebrane::CBSD cbsd;
-  xTaskCreate(windDirectionTask, "WindDirectionTask", 4096, (void*)&cbsd, TASK_PRIORITY, &windDirectionTaskHandle);
+  xTaskCreate(windDirectionTask, "WindDirectionTask", 4096, (void*)&cbsd, TASK_PRIORITY, NULL);
 
   btstack_event_queue = xQueueCreate(10, sizeof(unsigned long));
 
@@ -597,9 +583,9 @@ int main(void) {
 
   xTaskCreate(printTask, "PrintTask", 256, NULL, 2, &printTaskHandle);
 
-  xTaskCreate(bme280Task, "BME280Task", 1024, NULL, 1, &bme280TaskHandle);
+  xTaskCreate(bme280Task, "BME280Task", 1024, NULL, 1, NULL);
 
-  xTaskCreate(veml7700Task, "VEML7700Task", 1024, NULL, 1, &veml7700TaskHandle);
+  xTaskCreate(veml7700Task, "VEML7700Task", 1024, NULL, 1, NULL);
 
   xTaskCreate(averageWindSpeedTask, "AverageWindSpeedTask", 1024, nullptr, 1, nullptr);
   xTaskCreate(windGustTask, "WindGustTask", 1024, nullptr, 1, nullptr);
@@ -642,8 +628,8 @@ int main(void) {
   uart_mutex = xSemaphoreCreateMutex();
   i2c_mutex = xSemaphoreCreateMutex();
 
-  xTaskCreate(main_task, "TestMainThread", 1024, NULL, TASK_PRIORITY, &btTaskHandle);
-  xTaskCreate(ledTask, "LEDTask", 1024, NULL, tskIDLE_PRIORITY, &ledTaskHandle);
+  xTaskCreate(main_task, "TestMainThread", 1024, NULL, TASK_PRIORITY, NULL);
+  xTaskCreate(ledTask, "LEDTask", 1024, NULL, tskIDLE_PRIORITY, NULL);
 
   vTaskStartScheduler();
   
