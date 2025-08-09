@@ -31,6 +31,8 @@
 #include "hardware/spi.h"
 #include <semphr.h>
 
+#include "WindMonitor.hpp"
+
 // If this is defined, LoRa is disabled to allow printf to use UART0
 //#define DEBUG
 
@@ -40,12 +42,13 @@
 // Standard Task priority
 #define TASK_PRIORITY (tskIDLE_PRIORITY + 1UL)
 
+static WindMonitor wind;
+
 TaskHandle_t ledTaskHandle;
 TaskHandle_t sdTaskHandle;
 TaskHandle_t printTaskHandle;
 TaskHandle_t btTaskHandle;
 TaskHandle_t windDirectionTaskHandle;
-TaskHandle_t windSpeedTaskHandle;
 TaskHandle_t gpsTaskHandle;
 TaskHandle_t bme280TaskHandle;
 TaskHandle_t ds3231TaskHandle;
@@ -55,7 +58,6 @@ QueueHandle_t btstack_event_queue;
 
 std::string weatherStationData;
 std::string dateTime;
-std::string gpsData;
 float luxValue;
 
 SemaphoreHandle_t i2c_mutex;
@@ -63,7 +65,6 @@ SemaphoreHandle_t i2c_mutex;
 void main_task(__unused void *params);
 int picow_bt_example_init(void);
 void picow_bt_example_main(void);
-// static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size);
 uint16_t attReadCallback(hci_con_handle_t connection_handle, uint16_t att_handle,
     uint16_t offset, uint8_t * buffer, uint16_t buffer_size);
 int attWriteCallback(hci_con_handle_t connection_handle, uint16_t att_handle,
@@ -72,10 +73,6 @@ void heartbeatHandler(btstack_timer_source_t *ts);
 
 void ledTask(void *params);
 
-void updateMaxWindGust(long speed);
-void updateWindSpeedRunningAverage(long new_speed);
-float getMaxWindGust();
-long getWindSpeedRunningAverage();
 float calculateHourlyRainfall();
 
 
@@ -91,19 +88,14 @@ const uint RAIN_INTERRUPT_PIN = 14;
 const uint ANEMOMETER_INTERRUPT_PIN = 15;
 const bool CALLBACK_ENABLED = true;
 bool volatile ledShouldBeOn = false;
-uint volatile buttonPresses = 0;
-uint volatile anemometerClicks = 0;
-int volatile windSpeed = 0;
 char windDirectionName[4] = "NNE";
 float temperature, pressure, humidity;
 int windDirectionADCValue;
 
-int calculateWindSpeed();
 void getDirectionFromADCValue(int adcValue, char* buffer);
 void printDirectionFromADCValue(int adcValue);
 
 void windDirectionTask(void* pvParameters);
-void gpsTask(__unused void* pvParameters);
 
 static inline void cs_select() {
     asm volatile("nop \n nop \n nop");
@@ -121,12 +113,10 @@ void weatherSensorsCallback(uint gpio, __unused uint32_t events) {
   if (gpio == RAIN_INTERRUPT_PIN) {
     // Each 0.2794mm of rain cause one momentary contact closure
     ledShouldBeOn = !ledShouldBeOn;
-    buttonPresses++;
     rainBucketTips++;
   }
   else if (gpio == ANEMOMETER_INTERRUPT_PIN) {
-    // printf("---------------------------------- ANEMOMETER_INTERRUPT_PIN\n");
-    anemometerClicks++;
+    wind.onPulse();
   }
 }
 
@@ -134,18 +124,6 @@ constexpr int RAIN_BUFFER_SIZE = 360; // 360 × 10s = 1 hour
 constexpr float RAIN_PER_TIP_MM = 0.2794f;
 uint16_t rain_buffer[RAIN_BUFFER_SIZE] = {0};
 int rain_index = 0;
-// int rain_minute_index = 0;
-// void rotateRainBuffer() {
-//   rain_minute_index = (rain_minute_index + 1) % RAIN_BUFFER_SIZE;
-//   rain_buffer[rain_minute_index] = 0; // clear old minute’s count
-// }
-// float getHourlyRainfallmm() {
-//   uint32_t tip_sum = 0;
-//   for (int i = 0; i < RAIN_BUFFER_SIZE; ++i) {
-//       tip_sum += rain_buffer[i];
-//   }
-//   return tip_sum * RAIN_PER_TIP_MM;
-// }
 float calculateHourlyRainfall() {
   uint32_t tips = rainBucketTips;
   rainBucketTips = 0;
@@ -159,77 +137,6 @@ float calculateHourlyRainfall() {
   }  
   return tip_sum * RAIN_PER_TIP_MM;
 }
-
-
-bool timerCallback(__unused repeating_timer_t* repeatingTimerInfo) {
-    //printf("anemometerClicks %d ", anemometerClicks);
-    windSpeed = calculateWindSpeed();
-    // printf("Rain: %d\n", buttonPresses);
-    // printf("Wind Speed: %d\n", windSpeed);
-    // printf("Wind Direction: %s\n", windDirectionName);
-    //printf("windSpeed %dmph\n", windSpeed);
-    return true;
-}
-
-int calculateWindSpeed() {
-    // One anemometer turn in one second is 1.492 miles per hour
-    long speed = (14920 * anemometerClicks) / 10000;
-    anemometerClicks = 0;
-
-    updateMaxWindGust(speed);
-
-    updateWindSpeedRunningAverage(speed);
-
-    return (int)speed;
-}
-
-// Circular buffer
-#define MAX_SAMPLES 360 // 360 × 10s = 1 hour
-float gust_buffer[MAX_SAMPLES];
-int gust_index = 0;
-float max_gust = 0;
-
-void updateMaxWindGust(long speed) {
-  float old = gust_buffer[gust_index];
-  gust_buffer[gust_index] = speed;
-  gust_index = (gust_index + 1) % MAX_SAMPLES;
-
-  // Recalculate max if needed
-  if (speed >= max_gust) {
-      max_gust = speed;
-  }
-  else if (old == max_gust) {
-    // Recalculate full max
-    max_gust = gust_buffer[0];
-    for (int i = 1; i < MAX_SAMPLES; ++i) {
-      if (gust_buffer[i] > max_gust) {
-          max_gust = gust_buffer[i];
-      }
-    }
-  }
-}
-
-float getMaxWindGust() {
-  return max_gust;
-}
-
-constexpr int SAMPLE_INTERVAL_MS = 500;
-constexpr int AVG_WINDOW_SIZE = 12; // 12 × 0.5s = 6 seconds
-long speed_buffer[AVG_WINDOW_SIZE];
-int buffer_index = 0;
-long speed_sum = 0;
-
-void updateWindSpeedRunningAverage(long new_speed) {
-    speed_sum -= speed_buffer[buffer_index];       // Subtract old value
-    speed_buffer[buffer_index] = new_speed;        // Store new
-    speed_sum += new_speed;                        // Add new
-    buffer_index = (buffer_index + 1) % AVG_WINDOW_SIZE;
-}
-long getWindSpeedRunningAverage() {
-    return speed_sum / AVG_WINDOW_SIZE;
-}
-
-
 
 void getDirectionFromADCValue(int adcValue, char* buffer) {
   windDirectionADCValue = adcValue;
@@ -355,7 +262,6 @@ int attWriteCallback(hci_con_handle_t connection_handle, uint16_t att_handle,
 
 
 void vLaunch(void) {
-  //btstack_event_queue = xQueueCreate(10, sizeof(unsigned long));
   xTaskCreate(main_task, "TestMainThread", 1024, NULL, TASK_PRIORITY, &btTaskHandle);
   xTaskCreate(ledTask, "LEDTask", 1024, NULL, tskIDLE_PRIORITY, &ledTaskHandle);
   vTaskStartScheduler();
@@ -363,7 +269,6 @@ void vLaunch(void) {
 void main_task(__unused void *params) {
   int res = picow_bt_example_init();
   if (res){
-    printf("sdfdsfsdfsdfdfsdfsdfsdfsdf\n");
       return;
   }
   while(true) {
@@ -401,14 +306,6 @@ void ledTask(__unused void *params) {
     vTaskDelay(1000);
     cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 0);
     vTaskDelay(1000);
-
-    // unsigned long ulVar = 10UL;
-    // if (btstack_event_queue != 0) {
-    //   printf ("sending\n");
-    //   xQueueSend(btstack_event_queue, (void *)&ulVar, (TickType_t)10);
-    //   printf("sent\n");
-    // }
-
     printf("ledTask\n");
     cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
     vTaskDelay(1000);
@@ -437,24 +334,11 @@ void printTask(__unused void* pvParameters) {
 
 
 
-void windSpeedTask(__unused void* pvParameters) {
-  while(true) {
-    windSpeed = calculateWindSpeed();
-    //vTaskDelay(500);
-    vTaskDelay(pdMS_TO_TICKS(1000));
-  }
-}
 
 SemaphoreHandle_t uart_mutex;
 void windDirectionTask(__unused void* pvParameters) {
   Codebrane::CBSD* pCBSD = static_cast<Codebrane::CBSD*>(pvParameters);
   pCBSD->init();
-  // pCBSD->mount();
-  // pCBSD->unmount();
-
-  // Codebrane::CBLora cbLora;
-  // cbLora.setupLora(433, 10, "CODEBRANE");
-
   spi_init(SPI_PORT, 1350000);
   spi_set_format(SPI_PORT, 8, (spi_cpol_t)0, (spi_cpha_t)0, SPI_MSB_FIRST);
   gpio_set_function(CLK_PIN, GPIO_FUNC_SPI);
@@ -471,9 +355,6 @@ void windDirectionTask(__unused void* pvParameters) {
   buffer[1] = (8 + chan) << 4;
   buffer[2] = 0;
 
-  //unsigned char loraBuffer[35] = "Hello From Pico!";
-//  unsigned char loraBuffer[255] = "1,2,3.4,534,/sdf,43234/,dfg,rwe,234,fwef,,sdfesrwerse,,fse,V";
-
   while(true) {
     cs_select();
     sleep_ms(10);
@@ -488,47 +369,24 @@ void windDirectionTask(__unused void* pvParameters) {
     getDirectionFromADCValue(data, windDirectionName);
 
     printf("%s %d **************** Rain: %d, Wind Speed: %d, Wind Direction: %s, Temp: %.2f, Press: %.2f, Humidity: %.2f, Lux: %.2f\n",
-      dateTime.c_str(), windDirectionADCValue, buttonPresses, windSpeed, windDirectionName, temperature, pressure, humidity, luxValue);
+      dateTime.c_str(), windDirectionADCValue, rainBucketTips, wind.getRunningAverageMph(), windDirectionName, temperature, pressure, humidity, luxValue);
 
     sleep_ms(100);
 
-    // weatherStationData = fmt::format("{},{},{},{}",
-    //   buttonPresses, windSpeed, windDirectionName, gpsData);
     weatherStationData = fmt::format("{},{},{},{},{},{},{},{},{}!",
       dateTime.c_str(),
       calculateHourlyRainfall(),
-      getWindSpeedRunningAverage(),
-      getMaxWindGust(),
+      wind.getRunningAverageMph(),
+      wind.getHourlyMaxGustMph(),
       windDirectionName,
       temperature, pressure, humidity,
       luxValue);
 
-    //pCBSD->writeAfterInit();
     pCBSD->writeAfterInit(weatherStationData);
     
-    // pCBSD->write(weatherStationData);
-
-    //pCBSD->mount();
-    //pCBSD->unmount();
-
-    // unsigned char data[weatherStationData.size()];
-    // std::copy(weatherStationData.begin(), weatherStationData.end(), data);
-
-    //auto uchrs = reinterpret_cast<unsigned char*>(const_cast<char*>(weatherStationData.c_str()));
-    //printf("weatherStationData.length() = %d\n",weatherStationData.length());
-    //cbLora.sendLoraPacket(uchrs, weatherStationData.length(), 0);
-    // cbLora.sendLoraPacket(uchrs, weatherStationData.length(), 0);
-    // printf("SENDING LORA\n");
-    // std::size_t length = weatherStationData.length();
-    // unsigned char* loraBuffer = new unsigned char[weatherStationData.length()];
-    // weatherStationData.copy(reinterpret_cast<char*>(loraBuffer), length, 0);
-    // cbLora.sendLoraPacket(loraBuffer, sizeof(loraBuffer), 0);
-    // printf("SENT LORA\n");
-
     printf("sending to lora...\n");
     const char *msg = "testing from the weather station pico\n";
     if (xSemaphoreTake(uart_mutex, pdMS_TO_TICKS(100))) {
-      // uart_write_blocking(uart0, (const uint8_t *)msg, strlen(msg));
       // #ifndef DEBUG
       uart_write_blocking(uart1, (const uint8_t *)weatherStationData.c_str(),
         strlen(weatherStationData.c_str()));
@@ -544,165 +402,9 @@ void windDirectionTask(__unused void* pvParameters) {
       printf("sent\n");
     }
 
-    //vTaskDelay(pdMS_TO_TICKS(10000));
     vTaskDelay(pdMS_TO_TICKS(300000)); // 5mins
   }
 }
-
-
-
-
-
-
-
-// On receiving new valid GPS time, just overwrite current_time with GPS time
-typedef struct {
-    int year, month, day;
-    int hour, minute, second;
-} gps_time_t;
-gps_time_t current_time;
-// Simple helper to increment time by one second
-void increment_time_by_one_second(gps_time_t *t) {
-    t->second++;
-    if (t->second >= 60) {
-        t->second = 0;
-        t->minute++;
-        if (t->minute >= 60) {
-            t->minute = 0;
-            t->hour++;
-            if (t->hour >= 24) {
-                t->hour = 0;
-                // Naive day increment; you can add proper month-length/leap year logic here
-                t->day++;
-                // For simplicity, just reset month/day to 1 if you want
-                if (t->day > 31) {
-                    t->day = 1;
-                    t->month++;
-                    if (t->month > 12) {
-                        t->month = 1;
-                        t->year++;
-                    }
-                }
-            }
-        }
-    }
-}
-void time_keeper_task(void *pvParameters) {
-    while (1) {
-        vTaskDelay(pdMS_TO_TICKS(1000)); // Wait 1 second
-        increment_time_by_one_second(&current_time);
-        printf("Current time: %04d-%02d-%02d %02d:%02d:%02d\n",
-               current_time.year, current_time.month, current_time.day,
-               current_time.hour, current_time.minute, current_time.second);
-    }
-}
-
-/*
-void time_increment_task(__unused void *pv) {
-    while (1) {
-        vTaskDelay(pdMS_TO_TICKS(1000)); // wait 1 second
-
-        // Increment time by 1 second
-        current_time.second++;
-        if (current_time.second >= 60) {
-            current_time.second = 0;
-            current_time.minute++;
-            if (current_time.minute >= 60) {
-                current_time.minute = 0;
-                current_time.hour++;
-                if (current_time.hour >= 24) {
-                    current_time.hour = 0;
-                    // increment day, month, year accordingly
-                    // handle month length and leap years here
-                }
-            }
-        }
-    }
-}
-    */
-
-
-#define GPS_BUFFER_SIZE 256
-static char gps_buffer[GPS_BUFFER_SIZE];
-static volatile uint16_t gps_head = 0;
-static volatile uint16_t gps_tail = 0;
-void gps_buffer_put(char c) {
-    uint16_t next = (gps_head + 1) % GPS_BUFFER_SIZE;
-    if (next != gps_tail) {  // Avoid overwrite
-        gps_buffer[gps_head] = c;
-        gps_head = next;
-    }
-}
-bool gps_buffer_get(char *c) {
-    if (gps_tail == gps_head) {
-        return false; // Buffer empty
-    }
-    *c = gps_buffer[gps_tail];
-    gps_tail = (gps_tail + 1) % GPS_BUFFER_SIZE;
-    return true;
-}
-#define GPS_RX_PIN 5
-static int irq_count = 0;
-void on_uart_rx() {
-    irq_count++;
-    while (uart_is_readable(uart1)) {
-        char c = uart_getc(uart1);
-        gps_buffer_put(c);
-    }
-}
-void init_uart() {
-    uart_init(uart1, 9600); // GPS baud rate
-    gpio_set_function(GPS_RX_PIN, GPIO_FUNC_UART);
-
-    uart_set_hw_flow(uart1, false, false);
-    uart_set_format(uart1, 8, 1, UART_PARITY_NONE);
-    uart_set_fifo_enabled(uart1, true);
-
-    // Enable UART RX interrupt
-    irq_set_exclusive_handler(UART1_IRQ, on_uart_rx);
-    irq_set_enabled(UART1_IRQ, true);
-    uart_set_irq_enables(uart1, true, false);  // RX only
-}
-void gpsTask(__unused void *pvParameters) {
-    char line[128];
-    size_t index = 0;
-    char c;
-
-    while (1) {
-      printf("IRQ fired %d times\n", irq_count);
-        while (gps_buffer_get(&c)) {
-            if (c == '\n') {
-                line[index++] = '!';
-                line[index] = '\0';
-                // Process full line
-                // if (strstr(line, "$GPGGA") || strstr(line, "$GPRMC")) {
-                    printf("%s\n", line); // Could parse here
-                    gpsData = fmt::format("{}",line);
-                // }
-                index = 0;
-            } else if (index < sizeof(line) - 1) {
-                // don't add \r. It shows up as ^M and data is on next line
-                if (c != '\r') {
-                  line[index++] = c;
-                }
-            } else {
-                index = 0; // overflow, discard
-            }
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-}
-void update_time_from_gps(int year, int month, int day, int hour, int minute, int second) {
-    current_time.year = year;
-    current_time.month = month;
-    current_time.day = day;
-    current_time.hour = hour;
-    current_time.minute = minute;
-    current_time.second = second;
-}
-
-
 
 
 DS3231 rtc(i2c0);
@@ -713,9 +415,6 @@ void rtc_task(void* pvParameters) {
         struct tm time;
         if (xSemaphoreTake(i2c_mutex, portMAX_DELAY)) {
           if (rtc.readTime(time)) {
-              // printf("Time: %02d:%02d:%02d Date: %04d/%02d/%02d\n",
-              //       time.tm_hour, time.tm_min, time.tm_sec,
-              //       time.tm_year + 1900, time.tm_mon + 1, time.tm_mday);
               printf("Date: %02d/%02d/%04d Time: %02d:%02d:%02d\n",
                 time.tm_mday, time.tm_mon + 1, time.tm_year + 1900,
                 time.tm_hour, time.tm_min, time.tm_sec);
@@ -753,89 +452,6 @@ void rtc_setup_task(void* pvParameters) {
     }
 
     vTaskDelete(NULL); // Self-terminate
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-void gpsTask2(__unused void* pvParameters) {
-  // uart_init(uart1, 9600);
-  // gpio_set_function(4, GPIO_FUNC_UART);
-  // gpio_set_function(5, GPIO_FUNC_UART);
-  // uart_set_baudrate(uart1, 9600);
-  // uart_set_hw_flow(uart1, false, false);
-  // uart_set_format(uart1, 8, 1, UART_PARITY_NONE);
-  // uart_set_fifo_enabled(uart1, false);
-
-  // char nmeaSentence[100];
-  // int nmeaSentenceLength = 0;
-
-  char buf[256];
-  int i = 0;
-
-  while (true) {
-    printf("gpsTask\n");
-
-    if (uart_is_readable(uart1)) {
-        char ch = uart_getc(uart1);
-        if (ch == '\n' || i >= 256 - 1) {
-            buf[i] = '\0';
-            printf(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> GPS: %s\n", buf);
-            i = 0;
-        } else if (ch != '\r') {
-            buf[i++] = ch;
-        }
-    }
-
-    /*
-    while (uart_is_readable(uart1))
-    {
-        uint8_t ch = uart_getc(uart1);
-
-        if (ch == '$')
-        {
-            nmeaSentence[0] = ch;
-            nmeaSentenceLength = 1;
-        }
-        // remove \r and replace \n with \0 to make it null terminated string
-        else if ((nmeaSentenceLength > 0) && (ch != '\r'))
-        {
-            nmeaSentence[nmeaSentenceLength++] = ch;
-            printf("00000000000000000000000000000000000000000000 %s", nmeaSentence);
-            if (ch == '\n')
-            {
-                nmeaSentence[nmeaSentenceLength] = '\0';
-                nmeaSentenceLength = 0;
-                printf("%s", nmeaSentence);
-
-                if (strncmp(nmeaSentence + 3, "GGA", 3) == 0)
-                {
-                    float utc_time, latitude, longitude, hdop, altitude, speed, course;
-                    int lock, satellites, date;
-                    char active, ns, ew, units, speedstring[16], coursestring[16];
-                    if (sscanf(nmeaSentence + 7, "%f,%f,%c,%f,%c,%d,%d,%f,%f,%c", &utc_time, &latitude, &ns, &longitude, &ew, &lock, &satellites, &hdop, &altitude, &units) >= 1)
-                    {
-                        printf(">>>>>>>>>>>>>>>>>>>>>>>>>>>> Lat: %f Lon: %f Alt: %f\n", latitude, longitude, altitude);
-                    }
-                }
-            }
-        }
-        //vTaskDelay(pdMS_TO_TICKS(500));
-    } // while (uart_is_readable(uart1))
-     */
-
-    vTaskDelay(pdMS_TO_TICKS(10));
-  } // while (true) {
 }
 
 
@@ -894,13 +510,6 @@ void veml7700Task(void *params) {
 }
 
 
-
-
-// void initLoraUart() {
-//   uart_init(uart0, 115200);
-//   gpio_set_function(0, GPIO_FUNC_UART);
-//   gpio_set_function(1, GPIO_FUNC_UART);
-// }
 void initLoraUart() {
   uart_init(uart1, 115200);
   gpio_set_function(4, GPIO_FUNC_UART);
@@ -908,27 +517,14 @@ void initLoraUart() {
 }
 
 
-
-
-
-
-
 int main(void) {
   // #ifdef DEBUG
   stdio_init_all();
   // #endif
 
-  // init_uart();
-
   //#ifndef DEBUG
   initLoraUart();
   //#endif
-
-  // uart_init(uart1, 9600);
-  // gpio_set_function(4, GPIO_FUNC_UART);
-  // gpio_set_function(5, GPIO_FUNC_UART);
-  // uart_set_format(uart1, 8, 1, UART_PARITY_NONE);
-  // uart_set_fifo_enabled(uart1, true);
 
   gpio_init(RAIN_INTERRUPT_PIN);
   gpio_set_dir(RAIN_INTERRUPT_PIN, GPIO_IN);
@@ -953,22 +549,8 @@ int main(void) {
   // ANEMOMETER
   gpio_set_irq_enabled(ANEMOMETER_INTERRUPT_PIN, GPIO_IRQ_EDGE_RISE, CALLBACK_ENABLED);
 
-  // WIND DIRECTION
-  // spi_init(SPI_PORT, 1350000);
-  // spi_set_format(SPI_PORT, 8, (spi_cpol_t)0, (spi_cpha_t)0, SPI_MSB_FIRST);
-  // gpio_set_function(CLK_PIN, GPIO_FUNC_SPI);
-  // gpio_set_function(MOSI_PIN, GPIO_FUNC_SPI);
-  // gpio_set_function(MISO_PIN, GPIO_FUNC_SPI);
-  // gpio_set_function(CS_PIN, GPIO_FUNC_SPI);
-  // gpio_init(CS_PIN);
-  // gpio_set_dir(CS_PIN, GPIO_OUT);
-  // gpio_put(CS_PIN, 1);
-
   Codebrane::CBSD cbsd;
   xTaskCreate(windDirectionTask, "WindDirectionTask", 4096, (void*)&cbsd, TASK_PRIORITY, &windDirectionTaskHandle);
-  xTaskCreate(windSpeedTask, "WindSpeedTask", 1024, NULL, TASK_PRIORITY, &windSpeedTaskHandle);
-
-
 
   btstack_event_queue = xQueueCreate(10, sizeof(unsigned long));
 
@@ -976,12 +558,6 @@ int main(void) {
     printf("failed to initialise cyw43_arch\n");
     return -1;
   }
-
-  //vLaunch();
-
-
-
-
 
   // xTaskCreate(ledTask, "LEDTask", 256, NULL, TASK_PRIORITY, &ledTaskHandle);
 
@@ -995,8 +571,6 @@ int main(void) {
 //     &sdTaskHandle);
 
   xTaskCreate(printTask, "PrintTask", 256, NULL, 2, &printTaskHandle);
-
-  // xTaskCreate(gpsTask, "GPSTask", 1024, NULL, 1, &gpsTaskHandle);
 
   xTaskCreate(bme280Task, "BME280Task", 1024, NULL, 1, &bme280TaskHandle);
 
