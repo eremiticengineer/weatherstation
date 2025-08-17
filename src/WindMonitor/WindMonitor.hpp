@@ -36,7 +36,8 @@ public:
     // Computes 1s average speed, updates running-average buffer.
     inline int32_t sampleAverage1s() {
         uint32_t clicks = swapAndClear_(clicks_1s_);
-        int32_t mph = toMphFromInterval(clicks, 1000);
+        //int32_t mph = toMphFromInterval(clicks, 1000);
+        int32_t mph = toMphFromInterval10(clicks, 1000); // returs 10ths, 75 = 7.5
         // update running average circular buffer
         run_sum_ -= run_buf_[run_idx_];
         run_buf_[run_idx_] = mph;
@@ -50,7 +51,8 @@ public:
     // Updates the current-minute max gust using short-interval bursts.
     inline int32_t sampleGustInterval(uint32_t interval_ms) {
         uint32_t clicks = swapAndClear_(clicks_gust_);
-        int32_t mph = toMphFromInterval(clicks, interval_ms);
+        //int32_t mph = toMphFromInterval(clicks, interval_ms);
+        int32_t mph = toMphFromInterval10(clicks, interval_ms); // returs 10ths, 75 = 7.5
         if (mph > gust_min_buf_[gust_minute_idx_]) {
             gust_min_buf_[gust_minute_idx_] = mph;
         }
@@ -87,6 +89,14 @@ public:
         int64_t den = static_cast<int64_t>(WIND_SCALE_DEN) * interval_ms;
         return static_cast<int32_t>(num / den);
     }
+
+    // Returns mph * 10 (fixed-point, 1 decimal place)
+    static inline int32_t toMphFromInterval10(uint32_t clicks, uint32_t ms) {
+        long long num = 1LL * 14920 * clicks * 1000LL * 10;    // extra ×10 for tenths
+        long long den = 1LL * 10000 * ms;
+        return (int32_t)((num + den/2) / den); // rounded to nearest tenth
+    }
+
 
 private:
     // Atomically swap & clear a counter that’s touched in ISR + task
